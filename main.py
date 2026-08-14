@@ -1,90 +1,42 @@
+import os
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import requests
+import yt_dlp
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-class VideoRequest(BaseModel):
+class LinkRequest(BaseModel):
     url: str
 
-@app.get("/")
-def read_root():
-    return {"message": "GM Social Downloader API is Running!"}
-
 @app.post("/extract")
-def extract_video_info(data: VideoRequest):
-    input_url = data.url.strip()
+async def extract_video(request: LinkRequest):
+    video_url = request.url
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Content-Type": "application/json"
+    # Check if cookies file exists
+    cookie_path = "cookies.txt"
+    ydl_opts = {
+        'format': 'best[ext=mp4]/best',
+        'quiet': True,
+        'no_warnings': True,
     }
 
-    # 1. SPECIAL YOUTUBE ENGINE FALLBACK (Bypasses YouTube Sign-in / Bot Block)
-    if "youtube.com" in input_url or "youtu.be" in input_url:
-        try:
-            # YouTube specific API endpoint
-            yt_api_url = "https://api.cobalt.tools"
-            yt_payload = {
-                "url": input_url,
-                "videoQuality": "720",
-                "youtubeVideoCodec": "h264"
-            }
-            res = requests.post(yt_api_url, json=yt_payload, headers=headers, timeout=12).json()
-            if "url" in res:
-                return {"status": "success", "download_url": res["url"]}
-        except Exception:
-            pass
-
-        # Second YouTube API Engine Fallback
-        try:
-            y2_res = requests.post(
-                "https://co.wuk.sh/api/json",
-                json={"url": input_url, "vQuality": "720"},
-                headers=headers,
-                timeout=12
-            ).json()
-            if "url" in y2_res:
-                return {"status": "success", "download_url": y2_res["url"]}
-        except Exception:
-            pass
-
-    # 2. TIKTOK SPECIAL FALLBACK
-    if "tiktok.com" in input_url:
-        try:
-            tikwm_res = requests.post("https://www.tikwm.com/api/", data={"url": input_url}, timeout=10).json()
-            if tikwm_res.get("code") == 0 and "play" in tikwm_res.get("data", {}):
-                dl_link = tikwm_res["data"]["play"]
-                if not dl_link.startswith("http"):
-                    dl_link = "https://www.tikwm.com" + dl_link
-                return {"status": "success", "download_url": dl_link}
-        except Exception:
-            pass
-
-    # 3. INSTAGRAM / GENERAL SOCIAL MEDIA ENGINE
+    # Agar cookies file maujood hai toh usse use karein
+    if os.path.exists(cookie_path):
+        ydl_opts['cookiefile'] = cookie_path
+    
     try:
-        general_res = requests.post(
-            "https://cobalt-api.kwippy.com",
-            json={"url": input_url},
-            headers=headers,
-            timeout=12
-        ).json()
-        
-        if "url" in general_res:
-            return {"status": "success", "download_url": general_res["url"]}
-        elif "picker" in general_res and len(general_res["picker"]) > 0:
-            return {"status": "success", "download_url": general_res["picker"][0]["url"]}
-    except Exception:
-        pass
-
-    raise HTTPException(status_code=400, detail="Could not extract media. Please try another link.")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            download_url = info.get('url', None)
+            
+            if not download_url:
+                raise HTTPException(status_code=400, detail="Could not extract download URL")
+                
+            return {"download_url": download_url, "title": info.get('title')}
+            
+    except Exception as e:
+        error_msg = str(e)
+        # User friendly error message
+        if "confirm you're not a bot" in error_msg:
+            return {"error": "YouTube blocked the request. Update cookies.txt on server."}
+        raise HTTPException(status_code=500, detail=error_msg)
