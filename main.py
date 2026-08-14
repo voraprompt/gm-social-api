@@ -22,37 +22,51 @@ def read_root():
 
 @app.post("/extract")
 def extract_video_info(data: VideoRequest):
-    # Free Open-Source Cobalt Engine Instance API
-    cobalt_api_url = "https://co.wuk.sh/api/json"
+    input_url = data.url.strip()
     
+    # 1. Resolve Redirects for Shortened URLs (like vt.tiktok.com)
+    session = requests.Session()
     headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "url": data.url,
-        "vQuality": "max"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
     try:
-        response = requests.post(cobalt_api_url, json=payload, headers=headers, timeout=15)
-        res_data = response.json()
-        
-        # Check if cobalt returned valid video URL
-        if "url" in res_data:
-            return {
-                "status": "success",
-                "download_url": res_data["url"]
-            }
-        elif "picker" in res_data and len(res_data["picker"]) > 0:
-            # For gallery/photo posts
-            return {
-                "status": "success",
-                "download_url": res_data["picker"][0]["url"]
-            }
-        else:
-            raise HTTPException(status_code=400, detail="Could not extract video link.")
+        response = session.head(input_url, allow_redirects=True, timeout=8, headers=headers)
+        target_url = response.url
+    except Exception:
+        target_url = input_url
+
+    # 2. Try Primary Extraction Engine (Cobalt v10 API)
+    cobalt_endpoints = [
+        "https://cobalt-api.kwippy.com",
+        "https://api.cobalt.tools"
+    ]
+    
+    for endpoint in cobalt_endpoints:
+        try:
+            cobalt_res = requests.post(
+                endpoint,
+                json={"url": target_url, "videoQuality": "720"},
+                headers={"Accept": "application/json", "Content-Type": "application/json", **headers},
+                timeout=10
+            )
+            res_data = cobalt_res.json()
             
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+            if "url" in res_data:
+                return {"status": "success", "download_url": res_data["url"]}
+            elif "picker" in res_data and len(res_data["picker"]) > 0:
+                return {"status": "success", "download_url": res_data["picker"][0]["url"]}
+        except Exception:
+            continue
+
+    # 3. Fallback Engine for TikTok & Reels (Tikwm / Direct Public Extractor)
+    if "tiktok.com" in target_url:
+        try:
+            tikwm_res = requests.post("https://www.tikwm.com/api/", data={"url": target_url}, timeout=10).json()
+            if tikwm_res.get("code") == 0 and "play" in tikwm_res.get("data", {}):
+                dl_link = "https://www.tikwm.com" + tikwm_res["data"]["play"] if not tikwm_res["data"]["play"].startswith("http") else tikwm_res["data"]["play"]
+                return {"status": "success", "download_url": dl_link}
+        except Exception:
+            pass
+
+    raise HTTPException(status_code=400, detail="Failed to extract video. Service temporary unavailable.")
