@@ -16,79 +16,51 @@ app.add_middleware(
 class VideoRequest(BaseModel):
     url: str
 
+# RAPIDAPI CREDENTIALS (FROM YOUR SCREENSHOT)
+RAPIDAPI_KEY = "fe64982d69msh9912a3389f014cfp15b50bjsn7c1175c1ff2d"
+RAPIDAPI_HOST = "auto-download-all-in-one-big.p.rapidapi.com"
+
 @app.get("/")
 def read_root():
-    return {"message": "GM Social Downloader API is Running!"}
+    return {"message": "GM Social Downloader RapidAPI Engine Active!"}
 
 @app.post("/extract")
 def extract_video_info(data: VideoRequest):
     input_url = data.url.strip()
+
+    endpoint = f"https://{RAPIDAPI_HOST}/v1/social/autolink"
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "application/json"
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": RAPIDAPI_HOST,
+        "Content-Type": "application/json"
     }
 
-    # 1. TIKTOK ENGINE (100% Free - No Key/Card Needed)
-    if "tiktok.com" in input_url:
-        try:
-            tikwm_res = requests.post("https://www.tikwm.com/api/", data={"url": input_url}, timeout=10).json()
-            if tikwm_res.get("code") == 0 and "play" in tikwm_res.get("data", {}):
-                dl_link = tikwm_res["data"]["play"]
-                if not dl_link.startswith("http"):
-                    dl_link = "https://www.tikwm.com" + dl_link
-                return {"status": "success", "download_url": dl_link}
-        except Exception:
-            pass
+    payload = {"url": input_url}
 
-    # 2. YOUTUBE ENGINE (Free Invidious API Mirror Engine - Bypasses Bot Check)
-    if "youtube.com" in input_url or "youtu.be" in input_url:
-        # Extract video ID
-        video_id = ""
-        if "shorts/" in input_url:
-            video_id = input_url.split("shorts/")[1].split("?")[0].split("/")[0]
-        elif "v=" in input_url:
-            video_id = input_url.split("v=")[1].split("&")[0]
-        elif "youtu.be/" in input_url:
-            video_id = input_url.split("youtu.be/")[1].split("?")[0]
+    try:
+        response = requests.post(endpoint, json=payload, headers=headers, timeout=15)
+        res_data = response.json()
 
-        if video_id:
-            invidious_instances = [
-                f"https://invidious.nerdvpn.de/api/v1/videos/{video_id}",
-                f"https://inv.tux.stream/api/v1/videos/{video_id}",
-                f"https://invidious.drgns.space/api/v1/videos/{video_id}"
-            ]
-            
-            for inst in invidious_instances:
-                try:
-                    res = requests.get(inst, headers=headers, timeout=8).json()
-                    format_streams = res.get("formatStreams", [])
-                    if format_streams:
-                        # Grab highest quality video URL
-                        return {"status": "success", "download_url": format_streams[0]["url"]}
-                except Exception:
-                    continue
+        # Parse response logic
+        if response.status_code == 200:
+            # 1. If response contains 'medias' array
+            if "medias" in res_data and isinstance(res_data["medias"], list) and len(res_data["medias"]) > 0:
+                # Get the highest quality / first link
+                dl_link = res_data["medias"][0].get("url")
+                if dl_link:
+                    return {"status": "success", "download_url": dl_link}
 
-    # 3. INSTAGRAM & GENERAL SOCIAL MEDIA (Cobalt API Open Mirrors)
-    cobalt_mirrors = [
-        "https://api.cobalt.tools",
-        "https://cobalt-api.kwippy.com"
-    ]
-    
-    for mirror in cobalt_mirrors:
-        try:
-            res = requests.post(
-                mirror,
-                json={"url": input_url, "videoQuality": "720"},
-                headers={"Accept": "application/json", "Content-Type": "application/json", **headers},
-                timeout=10
-            ).json()
-            
-            if "url" in res:
-                return {"status": "success", "download_url": res["url"]}
-            elif "picker" in res and len(res["picker"]) > 0:
-                return {"status": "success", "download_url": res["picker"][0]["url"]}
-        except Exception:
-            continue
+            # 2. Direct url parameters check
+            if "url" in res_data and res_data["url"]:
+                return {"status": "success", "download_url": res_data["url"]}
+                
+            if "download_url" in res_data and res_data["download_url"]:
+                return {"status": "success", "download_url": res_data["download_url"]}
 
-    raise HTTPException(status_code=400, detail="Could not extract video. Please try again.")
+        # If API returned an error message
+        error_msg = res_data.get("message", "Unable to extract download link.")
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
