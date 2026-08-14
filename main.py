@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
+import yt_dlp
 
 app = FastAPI()
 
@@ -19,27 +20,6 @@ class VideoRequest(BaseModel):
 RAPIDAPI_KEY = "fe64982d69msh9912a3389f014cfp15b50bjsn7c1175c1ff2d"
 RAPIDAPI_HOST = "auto-download-all-in-one-big.p.rapidapi.com"
 
-def extract_url_from_json(data):
-    """Deep search for any playable mp4/video link in JSON response"""
-    if isinstance(data, str) and data.startswith("http"):
-        if any(ext in data.lower() for ext in [".mp4", "googlevideo.com", "cdn", "tiktokcdn"]):
-            return data
-    elif isinstance(data, dict):
-        # Priority keys
-        for key in ["url", "download_url", "play", "link"]:
-            if key in data and isinstance(data[key], str) and data[key].startswith("http"):
-                return data[key]
-        for val in data.values():
-            found = extract_url_from_json(val)
-            if found:
-                return found
-    elif isinstance(data, list):
-        for item in data:
-            found = extract_url_from_json(item)
-            if found:
-                return found
-    return None
-
 @app.get("/")
 def read_root():
     return {"message": "GM Social Downloader Backend Active!"}
@@ -48,9 +28,9 @@ def read_root():
 def extract_video(req: VideoRequest):
     url = req.url.strip()
     if not url:
-        raise HTTPException(status_code=400, detail="URL cannot be empty")
+        raise HTTPException(status_code=400, detail="URL is empty")
 
-    # 1. TIKTOK DIRECT ENGINE
+    # 1. TIKTOK ENGINE
     if "tiktok.com" in url:
         try:
             r = requests.post("https://www.tikwm.com/api/", data={"url": url}, timeout=10).json()
@@ -62,26 +42,24 @@ def extract_video(req: VideoRequest):
         except Exception:
             pass
 
-    # 2. YOUTUBE SHORTS ENGINE
+    # 2. YOUTUBE ENGINE (Direct yt-dlp Python API)
     if "youtube.com" in url or "youtu.be" in url:
         try:
-            video_id = ""
-            if "shorts/" in url:
-                video_id = url.split("shorts/")[1].split("?")[0].split("/")[0]
-            elif "v=" in url:
-                video_id = url.split("v=")[1].split("&")[0]
-            elif "youtu.be/" in url:
-                video_id = url.split("youtu.be/")[1].split("?")[0]
+            ydl_opts = {
+                'format': 'best[ext=mp4]/best',
+                'quiet': True,
+                'no_warnings': True,
+                'skip_download': True,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                direct_url = info.get('url')
+                if direct_url:
+                    return {"status": "success", "download_url": direct_url}
+        except Exception as e:
+            print("YTDLP Error:", e)
 
-            if video_id:
-                inv = requests.get(f"https://invidious.nerdvpn.de/api/v1/videos/{video_id}", timeout=8).json()
-                streams = inv.get("formatStreams", [])
-                if streams:
-                    return {"status": "success", "download_url": streams[0]["url"]}
-        except Exception:
-            pass
-
-    # 3. UNIVERSAL RAPIDAPI ENGINE (Instagram, Facebook, Twitter, etc.)
+    # 3. RAPIDAPI ENGINE (Instagram, Facebook, Twitter etc.)
     try:
         rapid_url = f"https://{RAPIDAPI_HOST}/v1/social/autolink"
         headers = {
@@ -92,10 +70,25 @@ def extract_video(req: VideoRequest):
         resp = requests.post(rapid_url, json={"url": url}, headers=headers, timeout=12)
         res_json = resp.json()
 
-        direct_link = extract_url_from_json(res_json)
-        if direct_link:
-            return {"status": "success", "download_url": direct_link}
-    except Exception as e:
-        print(f"RapidAPI Error: {e}")
+        # Recursive search in JSON
+        def find_url(data):
+            if isinstance(data, str) and data.startswith("http"):
+                if any(ext in data.lower() for ext in [".mp4", "googlevideo", "cdn"]):
+                    return data
+            elif isinstance(data, dict):
+                for k, v in data.items():
+                    res = find_url(v)
+                    if res: return res
+            elif isinstance(data, list):
+                for item in data:
+                    res = find_url(item)
+                    if res: return res
+            return None
+
+        found = find_url(res_json)
+        if found:
+            return {"status": "success", "download_url": found}
+    except Exception:
+        pass
 
     raise HTTPException(status_code=400, detail="Extraction failed for this URL")
