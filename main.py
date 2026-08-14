@@ -1,11 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import yt_dlp
+import requests
 
 app = FastAPI()
 
-# CORS configuration to allow your app to access the API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,25 +22,37 @@ def read_root():
 
 @app.post("/extract")
 def extract_video_info(data: VideoRequest):
-    ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'quiet': True,
-        'no_warnings': True,
+    # Free Open-Source Cobalt Engine Instance API
+    cobalt_api_url = "https://co.wuk.sh/api/json"
+    
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
     }
-
+    
+    payload = {
+        "url": data.url,
+        "vQuality": "max"
+    }
+    
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(data.url, download=False)
-
-            direct_url = info.get('url')
-            title = info.get('title', 'GM_Video')
-            thumbnail = info.get('thumbnail', '')
-
+        response = requests.post(cobalt_api_url, json=payload, headers=headers, timeout=15)
+        res_data = response.json()
+        
+        # Check if cobalt returned valid video URL
+        if "url" in res_data:
             return {
                 "status": "success",
-                "title": title,
-                "download_url": direct_url,
-                "thumbnail": thumbnail
+                "download_url": res_data["url"]
             }
+        elif "picker" in res_data and len(res_data["picker"]) > 0:
+            # For gallery/photo posts
+            return {
+                "status": "success",
+                "download_url": res_data["picker"][0]["url"]
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Could not extract video link.")
+            
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
