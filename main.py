@@ -16,51 +16,65 @@ app.add_middleware(
 class VideoRequest(BaseModel):
     url: str
 
-# RAPIDAPI CREDENTIALS (FROM YOUR SCREENSHOT)
 RAPIDAPI_KEY = "fe64982d69msh9912a3389f014cfp15b50bjsn7c1175c1ff2d"
 RAPIDAPI_HOST = "auto-download-all-in-one-big.p.rapidapi.com"
 
 @app.get("/")
 def read_root():
-    return {"message": "GM Social Downloader RapidAPI Engine Active!"}
+    return {"message": "GM Social Downloader Backend Active!"}
 
 @app.post("/extract")
 def extract_video_info(data: VideoRequest):
     input_url = data.url.strip()
 
-    endpoint = f"https://{RAPIDAPI_HOST}/v1/social/autolink"
-    
+    # 1. Resolve TikTok Shortened Links (vt.tiktok.com)
+    session = requests.Session()
     headers = {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": RAPIDAPI_HOST,
-        "Content-Type": "application/json"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     }
-
-    payload = {"url": input_url}
-
+    
     try:
-        response = requests.post(endpoint, json=payload, headers=headers, timeout=15)
+        resp = session.head(input_url, allow_redirects=True, timeout=8, headers=headers)
+        target_url = resp.url
+    except Exception:
+        target_url = input_url
+
+    # 2. TIKTOK DIRECT FALLBACK ENGINE (100% Reliable & Fast)
+    if "tiktok.com" in target_url:
+        try:
+            tikwm_res = requests.post("https://www.tikwm.com/api/", data={"url": target_url}, timeout=10).json()
+            if tikwm_res.get("code") == 0 and "play" in tikwm_res.get("data", {}):
+                dl_link = tikwm_res["data"]["play"]
+                if not dl_link.startswith("http"):
+                    dl_link = "https://www.tikwm.com" + dl_link
+                # Always return download_url directly
+                return {"status": "success", "download_url": dl_link}
+        except Exception:
+            pass
+
+    # 3. RAPIDAPI MULTI-DOWNLOADER (YouTube, Instagram, etc.)
+    try:
+        endpoint = f"https://{RAPIDAPI_HOST}/v1/social/autolink"
+        rapid_headers = {
+            "x-rapidapi-key": RAPIDAPI_KEY,
+            "x-rapidapi-host": RAPIDAPI_HOST,
+            "Content-Type": "application/json"
+        }
+
+        response = requests.post(endpoint, json={"url": target_url}, headers=rapid_headers, timeout=12)
         res_data = response.json()
 
-        # Parse response logic
         if response.status_code == 200:
-            # 1. If response contains 'medias' array
-            if "medias" in res_data and isinstance(res_data["medias"], list) and len(res_data["medias"]) > 0:
-                # Get the highest quality / first link
+            if "medias" in res_data and len(res_data["medias"]) > 0:
                 dl_link = res_data["medias"][0].get("url")
                 if dl_link:
                     return {"status": "success", "download_url": dl_link}
-
-            # 2. Direct url parameters check
-            if "url" in res_data and res_data["url"]:
+            elif "url" in res_data and res_data["url"]:
                 return {"status": "success", "download_url": res_data["url"]}
-                
-            if "download_url" in res_data and res_data["download_url"]:
+            elif "download_url" in res_data and res_data["download_url"]:
                 return {"status": "success", "download_url": res_data["download_url"]}
 
-        # If API returned an error message
-        error_msg = res_data.get("message", "Unable to extract download link.")
-        raise HTTPException(status_code=400, detail=error_msg)
-
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"RapidAPI Error: {e}")
+
+    raise HTTPException(status_code=400, detail="Could not extract download link.")
