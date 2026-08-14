@@ -1,0 +1,80 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import requests
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class VideoRequest(BaseModel):
+    url: str
+
+RAPIDAPI_KEY = "fe64982d69msh9912a3389f014cfp15b50bjsn7c1175c1ff2d"
+RAPIDAPI_HOST = "auto-download-all-in-one-big.p.rapidapi.com"
+
+@app.get("/")
+def read_root():
+    return {"message": "API Active"}
+
+@app.post("/extract")
+def extract_video(req: VideoRequest):
+    url = req.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL empty")
+
+    # 1. TIKTOK DIRECT ENGINE
+    if "tiktok" in url:
+        try:
+            r = requests.post("https://www.tikwm.com/api/", data={"url": url}, timeout=10).json()
+            if r.get("code") == 0 and "play" in r.get("data", {}):
+                link = r["data"]["play"]
+                if not link.startswith("http"):
+                    link = "https://www.tikwm.com" + link
+                return {"status": "success", "download_url": link}
+        except Exception:
+            pass
+
+    # 2. RAPIDAPI ALL-IN-ONE (Insta, FB, Shorts, Twitter)
+    try:
+        headers = {
+            "x-rapidapi-key": RAPIDAPI_KEY,
+            "x-rapidapi-host": RAPIDAPI_HOST,
+            "Content-Type": "application/json"
+        }
+        resp = requests.post(f"https://{RAPIDAPI_HOST}/v1/social/autolink", json={"url": url}, headers=headers, timeout=12)
+        
+        if resp.status_code == 200:
+            res_json = resp.json()
+            
+            # Recursive search for video URL
+            def extract_url(data):
+                if isinstance(data, str) and data.startswith("http"):
+                    if any(x in data.lower() for x in [".mp4", "googlevideo", "cdn", "fbcdn"]):
+                        return data
+                elif isinstance(data, dict):
+                    for k in ["url", "download_url", "play", "link"]:
+                        if k in data and isinstance(data[k], str) and data[k].startswith("http"):
+                            return data[k]
+                    for v in data.values():
+                        found = extract_url(v)
+                        if found: return found
+                elif isinstance(data, list):
+                    for item in data:
+                        found = extract_url(item)
+                        if found: return found
+                return None
+
+            download_link = extract_url(res_json)
+            if download_link:
+                return {"status": "success", "download_url": download_link}
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=400, detail="Extraction failed for this URL")
