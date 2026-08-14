@@ -24,49 +24,67 @@ def read_root():
 def extract_video_info(data: VideoRequest):
     input_url = data.url.strip()
     
-    # 1. Resolve Redirects for Shortened URLs (like vt.tiktok.com)
-    session = requests.Session()
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Content-Type": "application/json"
     }
-    
-    try:
-        response = session.head(input_url, allow_redirects=True, timeout=8, headers=headers)
-        target_url = response.url
-    except Exception:
-        target_url = input_url
 
-    # 2. Try Primary Extraction Engine (Cobalt v10 API)
-    cobalt_endpoints = [
-        "https://cobalt-api.kwippy.com",
-        "https://api.cobalt.tools"
-    ]
-    
-    for endpoint in cobalt_endpoints:
+    # 1. SPECIAL YOUTUBE ENGINE FALLBACK (Bypasses YouTube Sign-in / Bot Block)
+    if "youtube.com" in input_url or "youtu.be" in input_url:
         try:
-            cobalt_res = requests.post(
-                endpoint,
-                json={"url": target_url, "videoQuality": "720"},
-                headers={"Accept": "application/json", "Content-Type": "application/json", **headers},
-                timeout=10
-            )
-            res_data = cobalt_res.json()
-            
-            if "url" in res_data:
-                return {"status": "success", "download_url": res_data["url"]}
-            elif "picker" in res_data and len(res_data["picker"]) > 0:
-                return {"status": "success", "download_url": res_data["picker"][0]["url"]}
+            # YouTube specific API endpoint
+            yt_api_url = "https://api.cobalt.tools"
+            yt_payload = {
+                "url": input_url,
+                "videoQuality": "720",
+                "youtubeVideoCodec": "h264"
+            }
+            res = requests.post(yt_api_url, json=yt_payload, headers=headers, timeout=12).json()
+            if "url" in res:
+                return {"status": "success", "download_url": res["url"]}
         except Exception:
-            continue
+            pass
 
-    # 3. Fallback Engine for TikTok & Reels (Tikwm / Direct Public Extractor)
-    if "tiktok.com" in target_url:
+        # Second YouTube API Engine Fallback
         try:
-            tikwm_res = requests.post("https://www.tikwm.com/api/", data={"url": target_url}, timeout=10).json()
+            y2_res = requests.post(
+                "https://co.wuk.sh/api/json",
+                json={"url": input_url, "vQuality": "720"},
+                headers=headers,
+                timeout=12
+            ).json()
+            if "url" in y2_res:
+                return {"status": "success", "download_url": y2_res["url"]}
+        except Exception:
+            pass
+
+    # 2. TIKTOK SPECIAL FALLBACK
+    if "tiktok.com" in input_url:
+        try:
+            tikwm_res = requests.post("https://www.tikwm.com/api/", data={"url": input_url}, timeout=10).json()
             if tikwm_res.get("code") == 0 and "play" in tikwm_res.get("data", {}):
-                dl_link = "https://www.tikwm.com" + tikwm_res["data"]["play"] if not tikwm_res["data"]["play"].startswith("http") else tikwm_res["data"]["play"]
+                dl_link = tikwm_res["data"]["play"]
+                if not dl_link.startswith("http"):
+                    dl_link = "https://www.tikwm.com" + dl_link
                 return {"status": "success", "download_url": dl_link}
         except Exception:
             pass
 
-    raise HTTPException(status_code=400, detail="Failed to extract video. Service temporary unavailable.")
+    # 3. INSTAGRAM / GENERAL SOCIAL MEDIA ENGINE
+    try:
+        general_res = requests.post(
+            "https://cobalt-api.kwippy.com",
+            json={"url": input_url},
+            headers=headers,
+            timeout=12
+        ).json()
+        
+        if "url" in general_res:
+            return {"status": "success", "download_url": general_res["url"]}
+        elif "picker" in general_res and len(general_res["picker"]) > 0:
+            return {"status": "success", "download_url": general_res["picker"][0]["url"]}
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=400, detail="Could not extract media. Please try another link.")
