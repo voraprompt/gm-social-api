@@ -1,42 +1,68 @@
-import os
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import yt_dlp
+import requests
 
 app = FastAPI()
 
-class LinkRequest(BaseModel):
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class VideoRequest(BaseModel):
     url: str
 
+@app.get("/")
+def read_root():
+    return {"message": "GM Social Downloader API is Active!"}
+
 @app.post("/extract")
-async def extract_video(request: LinkRequest):
-    video_url = request.url
+def extract_video_info(data: VideoRequest):
+    input_url = data.url.strip()
     
-    # Check if cookies file exists
-    cookie_path = "cookies.txt"
-    ydl_opts = {
-        'format': 'best[ext=mp4]/best',
-        'quiet': True,
-        'no_warnings': True,
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Content-Type": "application/json"
     }
 
-    # Agar cookies file maujood hai toh usse use karein
-    if os.path.exists(cookie_path):
-        ydl_opts['cookiefile'] = cookie_path
-    
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=False)
-            download_url = info.get('url', None)
+    # 1. TIKTOK DIRECT ENGINE
+    if "tiktok.com" in input_url:
+        try:
+            tikwm_res = requests.post("https://www.tikwm.com/api/", data={"url": input_url}, timeout=10).json()
+            if tikwm_res.get("code") == 0 and "play" in tikwm_res.get("data", {}):
+                dl_link = tikwm_res["data"]["play"]
+                if not dl_link.startswith("http"):
+                    dl_link = "https://www.tikwm.com" + dl_link
+                return {"status": "success", "download_url": dl_link}
+        except Exception:
+            pass
+
+    # 2. YOUTUBE & INSTAGRAM COBALT ENGINE ROTATION
+    instances = [
+        "https://cobalt-api.kwippy.com",
+        "https://api.cobalt.tools",
+        "https://co.wuk.sh/api/json"
+    ]
+
+    for instance in instances:
+        try:
+            payload = {
+                "url": input_url,
+                "videoQuality": "720",
+                "youtubeVideoCodec": "h264"
+            }
+            res = requests.post(instance, json=payload, headers=headers, timeout=10).json()
             
-            if not download_url:
-                raise HTTPException(status_code=400, detail="Could not extract download URL")
-                
-            return {"download_url": download_url, "title": info.get('title')}
-            
-    except Exception as e:
-        error_msg = str(e)
-        # User friendly error message
-        if "confirm you're not a bot" in error_msg:
-            return {"error": "YouTube blocked the request. Update cookies.txt on server."}
-        raise HTTPException(status_code=500, detail=error_msg)
+            if "url" in res:
+                return {"status": "success", "download_url": res["url"]}
+            elif "picker" in res and len(res["picker"]) > 0:
+                return {"status": "success", "download_url": res["picker"][0]["url"]}
+        except Exception:
+            continue
+
+    raise HTTPException(status_code=400, detail="Could not extract video. Public nodes busy, please try again.")
