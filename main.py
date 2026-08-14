@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
-import re
 
 app = FastAPI()
 
@@ -20,25 +19,25 @@ class VideoRequest(BaseModel):
 RAPIDAPI_KEY = "fe64982d69msh9912a3389f014cfp15b50bjsn7c1175c1ff2d"
 RAPIDAPI_HOST = "auto-download-all-in-one-big.p.rapidapi.com"
 
-def find_mp4_in_dict(obj):
-    """Recursively search for any valid video URL in JSON response"""
-    if isinstance(obj, str):
-        if obj.startswith("http") and (".mp4" in obj.lower() or "googlevideo.com" in obj.lower() or "cdn" in obj.lower() or "tiktok" in obj.lower()):
-            return obj
-    elif isinstance(obj, list):
-        for item in obj:
-            res = find_mp4_in_dict(item)
-            if res:
-                return res
-    elif isinstance(obj, dict):
-        # Priority keys check
-        for priority_key in ["url", "download_url", "link", "play"]:
-            if priority_key in obj and isinstance(obj[priority_key], str) and obj[priority_key].startswith("http"):
-                return obj[priority_key]
-        for k, v in obj.items():
-            res = find_mp4_in_dict(v)
-            if res:
-                return res
+def extract_url_from_json(data):
+    """Deep search for any playable mp4/video link in JSON response"""
+    if isinstance(data, str) and data.startswith("http"):
+        if any(ext in data.lower() for ext in [".mp4", "googlevideo.com", "cdn", "tiktokcdn"]):
+            return data
+    elif isinstance(data, dict):
+        # Priority keys
+        for key in ["url", "download_url", "play", "link"]:
+            if key in data and isinstance(data[key], str) and data[key].startswith("http"):
+                return data[key]
+        for val in data.values():
+            found = extract_url_from_json(val)
+            if found:
+                return found
+    elif isinstance(data, list):
+        for item in data:
+            found = extract_url_from_json(item)
+            if found:
+                return found
     return None
 
 @app.get("/")
@@ -46,68 +45,57 @@ def read_root():
     return {"message": "GM Social Downloader Backend Active!"}
 
 @app.post("/extract")
-def extract_video_info(data: VideoRequest):
-    input_url = data.url.strip()
-
-    if not input_url:
+def extract_video(req: VideoRequest):
+    url = req.url.strip()
+    if not url:
         raise HTTPException(status_code=400, detail="URL cannot be empty")
 
-    # 1. TIKTOK DIRECT ENGINE (Fastest & Guaranteed No-Watermark)
-    if "tiktok.com" in input_url:
+    # 1. TIKTOK DIRECT ENGINE
+    if "tiktok.com" in url:
         try:
-            tikwm_res = requests.post("https://www.tikwm.com/api/", data={"url": input_url}, timeout=8).json()
-            if tikwm_res.get("code") == 0 and "play" in tikwm_res.get("data", {}):
-                dl = tikwm_res["data"]["play"]
-                if not dl.startswith("http"):
-                    dl = "https://www.tikwm.com" + dl
-                return {"status": "success", "download_url": dl}
+            r = requests.post("https://www.tikwm.com/api/", data={"url": url}, timeout=10).json()
+            if r.get("code") == 0 and "play" in r.get("data", {}):
+                link = r["data"]["play"]
+                if not link.startswith("http"):
+                    link = "https://www.tikwm.com" + link
+                return {"status": "success", "download_url": link}
         except Exception:
             pass
 
-    # 2. RAPIDAPI UNIVERSAL EXTRACTION ENGINE
+    # 2. YOUTUBE SHORTS ENGINE
+    if "youtube.com" in url or "youtu.be" in url:
+        try:
+            video_id = ""
+            if "shorts/" in url:
+                video_id = url.split("shorts/")[1].split("?")[0].split("/")[0]
+            elif "v=" in url:
+                video_id = url.split("v=")[1].split("&")[0]
+            elif "youtu.be/" in url:
+                video_id = url.split("youtu.be/")[1].split("?")[0]
+
+            if video_id:
+                inv = requests.get(f"https://invidious.nerdvpn.de/api/v1/videos/{video_id}", timeout=8).json()
+                streams = inv.get("formatStreams", [])
+                if streams:
+                    return {"status": "success", "download_url": streams[0]["url"]}
+        except Exception:
+            pass
+
+    # 3. UNIVERSAL RAPIDAPI ENGINE (Instagram, Facebook, Twitter, etc.)
     try:
-        endpoint = f"https://{RAPIDAPI_HOST}/v1/social/autolink"
+        rapid_url = f"https://{RAPIDAPI_HOST}/v1/social/autolink"
         headers = {
             "x-rapidapi-key": RAPIDAPI_KEY,
             "x-rapidapi-host": RAPIDAPI_HOST,
             "Content-Type": "application/json"
         }
+        resp = requests.post(rapid_url, json={"url": url}, headers=headers, timeout=12)
+        res_json = resp.json()
 
-        response = requests.post(endpoint, json={"url": input_url}, headers=headers, timeout=12)
-        res_data = response.json()
-
-        # Recursive link finder in RapidAPI JSON
-        found_url = find_mp4_in_dict(res_data)
-        if found_url:
-            return {"status": "success", "download_url": found_url}
-            
-        # If RapidAPI returned an error object/msg
-        if "message" in res_data:
-            rapid_msg = res_data["message"]
-        else:
-            rapid_msg = str(res_data)[:100]
-
+        direct_link = extract_url_from_json(res_json)
+        if direct_link:
+            return {"status": "success", "download_url": direct_link}
     except Exception as e:
-        rapid_msg = str(e)
+        print(f"RapidAPI Error: {e}")
 
-    # 3. YOUTUBE FALLBACK ENGINE (Invidious Direct Mirror)
-    if "youtube.com" in input_url or "youtu.be" in input_url:
-        try:
-            video_id = ""
-            if "shorts/" in input_url:
-                video_id = input_url.split("shorts/")[1].split("?")[0].split("/")[0]
-            elif "v=" in input_url:
-                video_id = input_url.split("v=")[1].split("&")[0]
-            elif "youtu.be/" in input_url:
-                video_id = input_url.split("youtu.be/")[1].split("?")[0]
-
-            if video_id:
-                inv_res = requests.get(f"https://invidious.nerdvpn.de/api/v1/videos/{video_id}", timeout=8).json()
-                streams = inv_res.get("formatStreams", [])
-                if streams and len(streams) > 0:
-                    return {"status": "success", "download_url": streams[0]["url"]}
-        except Exception:
-            pass
-
-    # If all engines fail, show exact reason instead of generic error
-    raise HTTPException(status_code=400, detail=f"API Error: {rapid_msg}")
+    raise HTTPException(status_code=400, detail="Extraction failed for this URL")
